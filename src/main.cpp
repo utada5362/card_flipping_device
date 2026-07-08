@@ -6,14 +6,14 @@
 
 #include "image_lottery.h"
 
-// ========== WiFi 配置（请修改为你的WiFi）==========
-const char* WIFI_SSID = "Weather";
-const char* WIFI_PASS = "2444666668888888";
+// ========== WiFi 配置 ==========
+const char* WIFI_SSID = "Weather";//wifi名称
+const char* WIFI_PASS = "2444666668888888";//wifi密码
 
 // ========== NTP 北京时间（UTC+8）==========
 const char* NTP_SERVER = "ntp.aliyun.com";
-const long GMT_OFFSET = 8 * 3600;       // 北京时间 UTC+8
-const int  DST_OFFSET = 0;              // 中国无夏令时
+const long GMT_OFFSET = 8 * 3600;
+const int  DST_OFFSET = 0;
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C OLED(U8G2_R0, U8X8_PIN_NONE, 22, 23);
 
@@ -44,9 +44,9 @@ int uiMode = 0;
 unsigned long uiTimer = 0;
 
 // ========== 时间显示 ==========
-char timeStr[16];           // "HH:MM:SS" 字符串
-bool timeReady = false;     // NTP 是否已同步
-unsigned long lastNTP = 0;  // 上次 NTP 更新时间
+char timeStr[16];
+bool timeReady = false;
+unsigned long lastNTP = 0;
 
 // ========== 状态 ==========
 bool m1_run = false;
@@ -137,27 +137,27 @@ void initWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  // 等待连接，最多 10 秒
   int retry = 0;
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
-    delay(500);
+    delay(300);
     retry++;
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     configTime(GMT_OFFSET, DST_OFFSET, NTP_SERVER, "pool.ntp.org");
 
-    // 等待首次 NTP 同步
     struct tm info;
     for (int i = 0; i < 20; i++) {
-      if (getLocalTime(&info)) {
-        timeReady = true;
-        break;
-      }
-      delay(500);
+      if (getLocalTime(&info)) { timeReady = true; break; }
+      delay(300);
     }
     updateTime();
   }
+
+  // 拿完时间就关 WiFi
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
 }
 
 // ========== UI ==========
@@ -180,10 +180,8 @@ void showUI(){
     OLED.setFont(u8g2_font_6x12_tr);
     OLED.drawStr(0, 12, "Flip Machine");
 
-    // 显示北京时间
     if (timeReady) {
       OLED.setFont(u8g2_font_ncenB18_tr);
-      // 居中显示时间
       int w = OLED.getStrWidth(timeStr);
       OLED.drawStr((128 - w) / 2, 50, timeStr);
     } else {
@@ -203,21 +201,34 @@ void setUI(int mode){
 
 // ========== 蜂鸣器 ==========
 void beep(int freq = 2000, int duration = 200){
-  ledcWriteTone(0, freq);
-  delay(duration);
-  ledcWriteTone(0, 0);
+  int halfUs = 500000 / freq;                       // 半个周期（微秒）
+  int cycles = (long)duration * 1000 / (halfUs * 2); // 周期数
+  for (int i = 0; i < cycles; i++) {
+    digitalWrite(BUZZER, HIGH);
+    delayMicroseconds(halfUs);
+    digitalWrite(BUZZER, LOW);
+    delayMicroseconds(halfUs);
+  }
+}
+
+void beepTriple(int freq = 2000, int onMs = 120, int offMs = 100){
+  for (int i = 0; i < 3; i++) {
+    beep(freq, onMs);
+    if (i < 2) delay(offMs);
+  }
 }
 
 // ========== 抽奖 ==========
 void lottery(){
 
   
-  beep();
+  beepTriple();   // 抽奖开始：连响三声
+
   setUI(3);
 
   // ===== 随机目标牌数 =====
-  int card1 = random(10, 25);
-  int card2 = random(10, 25);
+  int card1 = random(8, 20);
+  int card2 = random(8, 20);
 
   int steps1 = card1 * STEP_PER_CARD;
   int steps2 = card2 * STEP_PER_CARD;
@@ -340,12 +351,11 @@ void setup(){
   pinMode(SW2,INPUT);
   pinMode(SW3,INPUT);
 
-  ledcSetup(0, 2000, 8);
-  ledcAttachPin(BUZZER, 0);
-  ledcWrite(0, 0);
+  pinMode(BUZZER, OUTPUT);
+  digitalWrite(BUZZER, LOW);
 
-  // 启动诊断蜂鸣
-  beep(2000, 200);
+  // 开机提示音：持续 0.5 秒
+  beep(2000, 500);
 
   OLED.begin();
   OLED.clearBuffer();
@@ -383,7 +393,6 @@ void loop(){
     uiMode = 0;
   }
 
-  // 每秒更新一次北京时间
   if (millis() - lastNTP > 1000) {
     updateTime();
     lastNTP = millis();
@@ -397,24 +406,3 @@ void loop(){
 }
 
 
- /*
- #include <Arduino.h>
-
-#define BUZZER 2
-
-void setup() {
-  pinMode(BUZZER, OUTPUT);
-  digitalWrite(BUZZER, LOW);
-}
-
-void loop() {
-
-  // 响
-  digitalWrite(BUZZER, HIGH);
-  delay(1000);
-
-  // 停
-  digitalWrite(BUZZER, LOW);
-  delay(1000);
-}
-  */
