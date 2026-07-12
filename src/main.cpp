@@ -33,15 +33,28 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C OLED(U8G2_R0, U8X8_PIN_NONE, 22, 23);
 #define SW1 36
 #define SW2 39
 #define SW3 34
+#define SW4 35
 
 // ========== 蜂鸣器 ==========
 #define BUZZER 2
+
+// ========== Running LED / NE555 control ==========
+// Schematic: GPIO4(CTR) controls NE555 RESET(NEIN) through Q2.
+// With this transistor circuit, HIGH usually disables NE555, LOW enables it.
+#define LED_CTRL 4
+#define LED_CTRL_ENABLE LOW
+#define LED_CTRL_DISABLE HIGH
+#define LED_PULSE_MS 4
+#define LED_STEP_INTERVAL_FACTOR 38
+#define LED_STEP_INTERVAL_MIN 60
+#define LED_STEP_INTERVAL_MAX 1000
 
 #define STEP_PER_CARD 380
 
 // ========== OLED UI ==========
 int uiMode = 0;
 unsigned long uiTimer = 0;
+unsigned long uiDuration = 3000;
 
 // ========== 时间显示 ==========
 char timeStr[16];
@@ -52,9 +65,18 @@ unsigned long lastNTP = 0;
 bool m1_run = false;
 bool m2_run = false;
 
+enum LotteryMode {
+  LOTTERY_NORMAL,
+  LOTTERY_WHITE_ONLY,
+  LOTTERY_RED_ONLY
+};
+
+LotteryMode lotteryMode = LOTTERY_NORMAL;
+
 // ========== 双击检测 ==========
 unsigned long sw1_last = 0;
 unsigned long sw2_last = 0;
+unsigned long led_last_step = 0;
 
 int sw1_cnt = 0;
 int sw2_cnt = 0;
@@ -161,6 +183,11 @@ void initWiFi() {
 }
 
 // ========== UI ==========
+void drawCenteredText(const char* text, int y){
+  int w = OLED.getStrWidth(text);
+  OLED.drawStr((128 - w) / 2, y, text);
+}
+
 void showUI(){
 
   OLED.clearBuffer();
@@ -175,6 +202,18 @@ void showUI(){
   }
   else if(uiMode == 3){
     OLED.drawXBMP(0,0,128,64,epd_bitmap_20150130224742_AQX8n);
+  }
+  else if(uiMode == 4){
+    OLED.setFont(u8g2_font_7x13B_tr);
+    drawCenteredText("WHITE lottery", 36);
+  }
+  else if(uiMode == 5){
+    OLED.setFont(u8g2_font_7x13B_tr);
+    drawCenteredText("RED lottery", 36);
+  }
+  else if(uiMode == 6){
+    OLED.setFont(u8g2_font_7x13B_tr);
+    drawCenteredText("normal lottery", 36);
   }
   else{
     OLED.setFont(u8g2_font_6x12_tr);
@@ -194,9 +233,10 @@ void showUI(){
 }
 
 // ========== UI触发 ==========
-void setUI(int mode){
+void setUI(int mode, unsigned long duration = 3000){
   uiMode = mode;
   uiTimer = millis();
+  uiDuration = duration;
 }
 
 // ========== 蜂鸣器 ==========
@@ -218,17 +258,55 @@ void beepTriple(int freq = 2000, int onMs = 120, int offMs = 100){
   }
 }
 
+// ========== Running LED ==========
+void runningLedOff(){
+  digitalWrite(LED_CTRL, LED_CTRL_DISABLE);
+}
+
+void runningLedOn(){
+  digitalWrite(LED_CTRL, LED_CTRL_ENABLE);
+}
+
+void runningLedPulse(){
+  runningLedOn();
+  delay(LED_PULSE_MS);
+  runningLedOff();
+}
+
+void runningLedStart(){
+  led_last_step = 0;
+  runningLedPulse();
+}
+
+void runningLedTick(int motorDelayMs){
+  unsigned long now = millis();
+  unsigned long interval = constrain(
+    motorDelayMs * LED_STEP_INTERVAL_FACTOR,
+    LED_STEP_INTERVAL_MIN,
+    LED_STEP_INTERVAL_MAX
+  );
+
+  if(now - led_last_step >= interval){
+    runningLedPulse();
+    led_last_step = millis();
+  }
+}
+
 // ========== 抽奖 ==========
 void lottery(){
+  runningLedStart();
 
   
   beepTriple();   // 抽奖开始：连响三声
 
   setUI(3);
 
+  bool runM1 = lotteryMode != LOTTERY_RED_ONLY;
+  bool runM2 = lotteryMode != LOTTERY_WHITE_ONLY;
+
   // ===== 随机目标牌数 =====
-  int card1 = random(8, 20);
-  int card2 = random(8, 20);
+  int card1 = runM1 ? random(8, 20) : 0;
+  int card2 = runM2 ? random(8, 20) : 0;
 
   int steps1 = card1 * STEP_PER_CARD;
   int steps2 = card2 * STEP_PER_CARD;
@@ -245,23 +323,23 @@ void lottery(){
     int delayTime;
 
     // ===== 三段减速逻辑 =====
-    if(progress < 0.5){
+    if(progress < 0.7){
       delayTime = 2;
     }
-    else if(progress < 0.8){
-      delayTime = 2 + (int)((progress - 0.5) * 20);
+    else if(progress < 0.9){
+      delayTime = 2 + (int)((progress - 0.7) * 20);
     }
     else{
-      delayTime = 10 + (int)((progress - 0.8) * 80);
+      delayTime = 10 + (int)((progress - 0.9) * 80);
     }
 
     // ===== 电机1 =====
-    if(i < steps1){
+    if(runM1 && i < steps1){
       m1.step(true);
     }
 
     // ===== 电机2（反向）=====
-    if(i < steps2){
+    if(runM2 && i < steps2){
       m2.step(false);
     }
 
@@ -271,11 +349,14 @@ void lottery(){
       lastUI = millis();
     }
 
+    runningLedTick(delayTime);
+
     delay(delayTime);
   }
 
   m1.stop();
   m2.stop();
+  runningLedOff();
 
   // 抽奖结束，切回默认文字
   setUI(0);
@@ -340,6 +421,29 @@ void handleSW2(){
   }
 }
 
+// ================= SW4 =================
+void handleSW4(){
+  if(digitalRead(SW4) == LOW){
+    delay(20);
+    if(digitalRead(SW4) == LOW){
+      while(digitalRead(SW4) == LOW);
+
+      if(lotteryMode == LOTTERY_NORMAL){
+        lotteryMode = LOTTERY_WHITE_ONLY;
+        setUI(4, 1000);
+      }
+      else if(lotteryMode == LOTTERY_WHITE_ONLY){
+        lotteryMode = LOTTERY_RED_ONLY;
+        setUI(5, 1000);
+      }
+      else{
+        lotteryMode = LOTTERY_NORMAL;
+        setUI(6, 1000);
+      }
+    }
+  }
+}
+
 // ========== setup ==========
 void setup(){
   Serial.begin(115200);
@@ -353,6 +457,9 @@ void setup(){
 
   pinMode(BUZZER, OUTPUT);
   digitalWrite(BUZZER, LOW);
+
+  pinMode(LED_CTRL, OUTPUT);
+  runningLedOff();
 
   // 开机提示音：持续 0.5 秒
   beep(2000, 500);
